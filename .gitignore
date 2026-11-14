@@ -1,0 +1,13 @@
+node_modules/
+output/
+_tmp*/
+*.log
+.env
+.env.*
+.DS_Store
+Thumbs.db
+.dsh/
+captures/
+backups/
+.chrome-tmp/
+.playwright-cli/

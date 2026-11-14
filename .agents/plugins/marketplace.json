@@ -1,0 +1,20 @@
+{
+  "name": "stylescout",
+  "interface": {
+    "displayName": "采风 StyleScout"
+  },
+  "plugins": [
+    {
+      "name": "stylescout",
+      "source": {
+        "source": "local",
+        "path": "./plugins/stylescout"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
