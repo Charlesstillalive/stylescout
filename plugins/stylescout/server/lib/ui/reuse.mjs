@@ -5,7 +5,7 @@ import {randomUUID,createHash} from 'node:crypto'
 import * as store from '../store/index.mjs'
 import {readUi,saveUi} from '../store/ui.mjs'
 import {renderUi,flattenUi,validateEdits} from './document.mjs'
-import {snapshotEditableUi} from '../capture/collect.mjs'
+import {capture,snapshotEditableUi} from '../capture/collect.mjs'
 
 const fail=(message,status=400)=>Object.assign(new Error(message),{status})
 const clone=x=>JSON.parse(JSON.stringify(x))
@@ -21,12 +21,12 @@ async function readAsset(root,relative){
 }
 // The temporary renderer serves only this HTML and bounded capture asset paths.
 // No source-site scripts execute, and no library mutation is exposed here.
-async function withRenderer(root,html,run){
+async function withRenderer(root,html,run,serveAssets=true){
   const server=http.createServer(async(req,res)=>{
     try{
       if(req.url==='/'){res.writeHead(200,{'content-type':'text/html; charset=utf-8'});res.end(html);return}
       const match=(req.url||'').match(/^\/style-scout\/files\/(captures\/[\w-]+\/assets\/[\w.-]+)$/)
-      if(!match)throw new Error('not found')
+      if(!serveAssets||!match)throw new Error('not found')
       const type=mime[path.extname(match[1]).toLowerCase()];if(!type)throw new Error('not found')
       const bytes=await readAsset(root,match[1]);res.writeHead(200,{'content-type':type});res.end(bytes)
     }catch{res.writeHead(404);res.end()}
@@ -110,6 +110,7 @@ async function ownAssets(root,id,document,origin){
   const refs=new Map([...json.matchAll(assetPattern)].map(m=>[m[0],{capture:m[1],file:m[2]}]))
   const dir=path.join(root,'captures',id,'assets');await fs.mkdir(dir,{recursive:true})
   for(const [ref,value] of refs){
+    if(value.capture===id)continue
     const bytes=await readAsset(root,'captures/'+value.capture+'/assets/'+value.file)
     const file=createHash('sha256').update(bytes).digest('hex').slice(0,40)+path.extname(value.file);await fs.writeFile(path.join(dir,file),bytes)
     json=json.split(ref).join('/style-scout/files/captures/'+id+'/assets/'+file)
@@ -117,15 +118,23 @@ async function ownAssets(root,id,document,origin){
   return JSON.parse(json)
 }
 
-async function createDocument(root,{name,kind,source,provenance,html,width,height,prepare}){
+async function createDocument(root,{name,kind,source,provenance,html,width,height,prepare,inlineOnly=false,selectedText}){
   const id='cap_'+kind+'_'+randomUUID().replaceAll('-',''),dir=path.join(root,'captures',id)
   await fs.mkdir(dir,{recursive:true})
   try{
+    let sourceWarnings=[]
+    if(selectedText){
+      const part=await capture(source,{outDir:path.dirname(dir),dir:id,selectedText})
+      html=renderUi(part.doc);width=part.width;height=part.height
+      prepare='('+detachPart.toString()+')('+JSON.stringify(part.nodeId)+')'
+      sourceWarnings=part.doc.warnings
+    }
     const result=await withRenderer(root,html,async origin=>{
       const snapshot=await snapshotEditableUi({url:origin+'/',outDir:dir,width,height,prepare})
-      return {document:await ownAssets(root,id,snapshot.document,origin),setup:snapshot.setup}
-    })
+      return {document:inlineOnly?snapshot.document:await ownAssets(root,id,snapshot.document,origin),setup:snapshot.setup}
+    },!inlineOnly)
     const document=result.document;document.title=name;document.source=source;document.provenance=provenance
+    document.warnings=[...new Set([...sourceWarnings,...document.warnings])]
     if(kind==='part'){document.partRootId=document.root.children.filter(n=>n.id).at(-1).id;document.canvasBackground=result.setup.background}
     if(document.warnings.some(w=>w.includes('上限')))throw fail('选区或组合过于复杂，请减少内容')
     await fs.writeFile(path.join(dir,'ui.json'),JSON.stringify(document),'utf8')
@@ -144,12 +153,49 @@ async function createDocument(root,{name,kind,source,provenance,html,width,heigh
 export async function uiAction(root,request){
   if(!request||typeof request!=='object'||Array.isArray(request))throw fail('操作内容不正确')
   const {action,id}=request
+  if(action==='collect-selection'){
+    const text=request.selectedText
+    if(typeof text!=='string'||!text.trim()||text.length>500)throw fail('请选择卡片上的标题或不超过 500 字的原文。')
+    let url
+    try{url=new URL(request.url)}catch{throw fail('请提供原网页地址。')}
+    if(!['http:','https:'].includes(url.protocol)||url.username||url.password)throw fail('网页地址无效。')
+    const saved=await createDocument(root,{kind:'part',name:nameOf(request.name??text.trim().slice(0,100)),source:url.href,provenance:[],selectedText:text})
+    return {id:saved.entry.id,url:saved.url,warnings:saved.entry.editableUi.warnings}
+  }
   if(action==='list')return {entries:(await store.listEntries(root)).filter(e=>!request.kind||e.kind===request.kind).map(e=>({id:e.id,kind:e.kind,name:e.name,source:e.source,count:e.editableUi?.count||0,url:'/style-scout/#ui='+e.id}))}
   if(action==='nodes'){
     const {document,edits,revision}=await readUi(root,id),q=String(request.search||'').toLowerCase()
     const nodes=flattenUi(document.root).filter(({node})=>!q||((edits[node.id]?.text??briefNode(node))+' '+node.tag).toLowerCase().includes(q)).map(({node,parent})=>({id:node.id,parent,tag:node.tag,text:edits[node.id]?.text??briefNode(node),size:node.box,editable:!node.unsupported}))
     const offset=Math.floor(number(request.offset,0,0,100000)),limit=Math.floor(number(request.limit,100,1,500))
     return {id,revision,total:nodes.length,nodes:nodes.slice(offset,offset+limit)}
+  }
+  if(action==='clip-web-part'){
+    const name=nameOf(request.name),source=new URL(request.source)
+    if(!['http:','https:'].includes(source.protocol)||source.username||source.password)throw fail('网页地址无效')
+    const width=number(request.width,0,1,4000),height=number(request.height,0,1,12000)
+    const background=/^(transparent|rgba?\([\d., %]+\))$/.test(request.background)?request.background:'transparent'
+    const ids=new Set()
+    const cleanStyle=style=>Object.fromEntries(Object.entries(style||{}).filter(([key,value])=>
+      /^[a-z-]+$/.test(key)&&typeof value==='string'&&!/[{};<>@\\]/.test(value)&&
+      !/url\s*\(/i.test(value.replace(/url\(["']?#[\w.-]+["']?\)/g,''))))
+    function clean(node,depth=0){
+      if(depth>80||ids.size>1500)throw fail('这块内容太多，请选择更小的区域')
+      if(typeof node?.text==='string'&&!node.id)return {text:node.text}
+      if(!/^ui\d+$/.test(node?.id)||ids.has(node.id)||!/^\w+$/.test(node.tag))throw fail('选区结构不完整')
+      ids.add(node.id)
+      const attrs=Object.fromEntries(Object.entries(node.attrs||{}).filter(([key,value])=>
+        ['alt','title','role','aria-label','placeholder','id','viewBox','d','fill','stroke','stroke-width','width','height','x','y','cx','cy','r','x1','x2','y1','y2','rx','ry','points','transform','fill-rule','offset','stop-color','opacity','stroke-linecap','stroke-linejoin','preserveAspectRatio'].includes(key)&&typeof value==='string'&&!/url\s*\(/i.test(value.replace(/url\(#[\w.-]+\)/g,''))))
+      if(node.tag==='img'&&/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(node.attrs?.src))attrs.src=node.attrs.src
+      const pseudo={}
+      for(const k of ['::before','::after'])if(node.pseudo?.[k])pseudo[k]=cleanStyle(node.pseudo[k])
+      return {id:node.id,tag:node.tag,attrs,style:cleanStyle(node.style),pseudo,children:(node.children||[]).map(c=>clean(c,depth+1))}
+    }
+    const part=clean(request.part)
+    if(!part.id||part.tag==='body')throw fail('请选择页面中的一块')
+    Object.assign(part.style,{position:'relative',top:'auto',left:'auto',right:'auto',bottom:'auto',margin:'0',transform:'none',width:width+'px',height:height+'px','box-sizing':'border-box'})
+    const rootNode={id:'clipbody',tag:'body',style:{margin:'0',background},children:[part]}
+    const saved=await createDocument(root,{name,kind:'part',source:source.href,provenance:[],inlineOnly:true,html:renderUi({root:rootNode}),width:Math.ceil(width),height:Math.min(1000,Math.ceil(height)),prepare:'('+detachPart.toString()+')('+JSON.stringify(part.id)+')'})
+    return {id:saved.entry.id,url:saved.url}
   }
   if(action==='save-part'){
     const name=nameOf(request.name),current=await readUi(root,id)

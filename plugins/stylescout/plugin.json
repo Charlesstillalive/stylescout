@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "stylescout",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "采风：收藏网页中的 UI，读取素材交给 ChatGPT 改造，再将修改版存回本机素材库。",
   "extensions": {
     "com.openai": {

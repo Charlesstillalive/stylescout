@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "采风 · 网页取材",
+  "description": "在原网页点选按钮或卡片，收藏到自己的采风素材库。",
+  "version": "0.1.1",
+  "permissions": ["activeTab", "scripting", "storage", "contextMenus"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "action": {"default_title": "采风：选一块收藏"},
+  "background": {"service_worker": "worker.js"},
+  "commands": {"_execute_action": {"suggested_key": {"default": "Alt+Shift+S"}, "description": "选一块收藏"}}
+}

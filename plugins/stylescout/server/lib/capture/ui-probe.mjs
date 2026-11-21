@@ -1,5 +1,5 @@
 // Runs inside the captured page. Keep this function self-contained.
-export function extractUiDocument() {
+export function extractUiDocument(selection, includeFonts = false) {
   const properties = ('display visibility position top right bottom left z-index box-sizing width height min-width min-height max-width max-height margin-top margin-right margin-bottom margin-left padding-top padding-right padding-bottom padding-left overflow overflow-x overflow-y flex-direction flex-wrap flex-grow flex-shrink flex-basis align-items align-content align-self justify-content justify-items justify-self order gap row-gap column-gap grid-template-columns grid-template-rows grid-auto-flow grid-auto-columns grid-auto-rows grid-column grid-row vertical-align float clear color background-color background-image background-size background-position background-repeat background-clip background-origin border-top border-right border-bottom border-left border-radius border-collapse border-spacing box-shadow opacity transform transform-origin filter backdrop-filter clip-path object-fit object-position aspect-ratio font-family font-size font-weight font-style font-stretch font-variant line-height letter-spacing word-spacing text-align text-indent text-transform text-decoration white-space word-break overflow-wrap text-overflow list-style-type list-style-position list-style-image fill fill-rule stroke stroke-width stroke-linecap stroke-linejoin paint-order vector-effect').split(' ')
   properties.push(...('writing-mode text-orientation text-wrap text-wrap-mode text-wrap-style font-feature-settings font-variation-settings font-kerning text-rendering -webkit-text-fill-color -webkit-text-stroke-width -webkit-text-stroke-color -webkit-line-clamp -webkit-box-orient mask-image mask-size mask-position mask-repeat mask-composite isolation mix-blend-mode perspective perspective-origin transform-style backface-visibility translate rotate scale').split(' '))
   properties.push('grid-template-areas','text-box-trim','text-box-edge','pointer-events')
@@ -51,6 +51,7 @@ export function extractUiDocument() {
     const node = { id, tag, style, attrs: {}, children: [], box: { x: rect.x + scrollX, y: rect.y + scrollY, w: rect.width, h: rect.height } }
     if(el.namespaceURI==='http://www.w3.org/2000/svg')node.svg=true
     for (const attr of el.attributes) if (attrs.has(attr.name)) node.attrs[attr.name] = attr.value
+    if (selection && ['input','textarea'].includes(tag)) { delete node.attrs.value; node.attrs.placeholder = el.placeholder || ''; return node }
     if (tag === 'input') { node.attrs.type = ['checkbox','radio'].includes(el.type) ? el.type : 'text'; node.attrs.value = el.type === 'password' ? '' : el.value; if (el.checked) node.attrs.checked = '' }
     if (tag === 'textarea') node.children.push({ text: el.value })
     if (tag === 'img') { node.attrs.src = el.currentSrc || el.src; node.attrs.loading = 'eager' }
@@ -72,7 +73,7 @@ export function extractUiDocument() {
     }
     return node
   }
-  const root = visit(document.body)
+  const root = visit(selection || document.body)
   if (unsupported) warnings.push(unsupported + ' 处特殊画面尚不能拆分，已在画面中标出')
   if (truncated) warnings.push('页面过于复杂，已达到提取上限；部分内容未提取')
   let fonts = ''
@@ -80,6 +81,6 @@ export function extractUiDocument() {
     if (rule.type === CSSRule.FONT_FACE_RULE) fonts += rule.cssText.replace(/url\(\s*(["']?)([^"')]+)\1\s*\)/g,(_,quote,url)=>'url("'+new URL(url,base).href+'")') + '\n'
     else if (rule.cssRules) scan(rule.cssRules,base)
   } }
-  for (const sheet of document.styleSheets) { try { scan(sheet.cssRules,sheet.href||document.baseURI) } catch {} }
+  if (!selection || includeFonts) for (const sheet of document.styleSheets) { try { scan(sheet.cssRules,sheet.href||document.baseURI) } catch {} }
   return { schema: 'style-scout/ui@1', title: document.title, source: location.href, capturedAt: new Date().toISOString(), viewport: { width: innerWidth, height: innerHeight }, height: Math.min(document.documentElement.scrollHeight, 16000), htmlStyle: styles(document.documentElement), root, fonts, count, warnings }
 }

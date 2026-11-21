@@ -16,6 +16,7 @@ import fss from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { extractUiDocument } from './ui-probe.mjs'
+import {pickBlock,readMarkedPart} from './selection.mjs'
 
 /** Chrome/Edge candidates; STYLE_SCOUT_CHROME or CHROME_PATH overrides. */
 const CHROME_CANDIDATES = [
@@ -939,6 +940,13 @@ export async function capture(url, options = {}) {
       return true;
     })()`, { awaitPromise: true })
     phase = '提取界面元素'
+    if (options.selectedText) {
+      const expression = '(' + readMarkedPart.toString() + ')(' + JSON.stringify(options.selectedText) + ',' + pickBlock.toString() + ',' + extractUiDocument.toString() + ')'
+      const part = await cdp.evalJson(expression)
+      if (part.error) throw new Error(part.error)
+      await localizeUiDocument(part.doc, dir)
+      return part
+    }
     const raw = await cdp.eval(COLLECT_JS)
     const components = await cdp.eval(COMPONENT_PROBE_JS).catch(() => null)
     const structure = await cdp.eval(SECTION_PROBE_JS).catch(() => null)
